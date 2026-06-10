@@ -3,7 +3,7 @@
 每鼠 4 伤口 | 拖拽照片自动保存 | 批量上传 | 跨鼠对比
 """
 import streamlit as st
-import os, socket, time
+import os, socket
 import pandas as pd
 from datetime import datetime
 
