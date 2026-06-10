@@ -1,0 +1,6 @@
+experiment_data/experiment.db
+experiment_data/photos/*
+experiment_data/exports/*
+__pycache__/
+*.pyc
+.streamlit/
