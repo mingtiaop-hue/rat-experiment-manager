@@ -21,11 +21,11 @@ WOUND_COUNT = 4
 GROUPS = ["Control", "Alginate", "Alginate_HJ", "Pure_ES", "Stretched_HJ_ES"]
 
 GROUP_LABELS = {
-    "Control":          "对照组",
-    "Alginate":         "海藻酸钙组",
-    "Alginate_HJ":      "海藻酸钙异质结组",
-    "Pure_ES":          "纯电刺激组",
-    "Stretched_HJ_ES":  "拉伸异质结水凝胶+电刺激组",
+    "Control":          "Control",
+    "Alginate":         "SA",
+    "Alginate_HJ":      "HJ-SA",
+    "Pure_ES":          "ES",
+    "Stretched_HJ_ES":  "DCC-HJ-ES",
 }
 
 def get_rat_type(rat_id: int) -> str:

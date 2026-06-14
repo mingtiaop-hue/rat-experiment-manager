@@ -16,9 +16,9 @@ streamlit run app.py
 ## 实验设计
 
 - **不电刺激鼠** (8只): 7, 9, 10, 11, 13, 15, 16, 17
-  - W1→Control / W2→Alginate / W3, W4→Alginate_HJ
+  - W1→Control / W2→SA / W3, W4→HJ-SA
 - **电刺激鼠** (9只): 1, 2, 3, 4, 5, 6, 8, 12, 14
-  - W1, W2→Pure_ES / W3, W4→Stretched_HJ_ES
+  - W1, W2→ES / W3, W4→DCC-HJ-ES
 
 每鼠4个伤口，共68个伤口。伤口面积可用 ImageJ 后补计算。
 

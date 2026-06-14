@@ -218,7 +218,7 @@ with st.sidebar:
         st.warning("实验未初始化")
 
     st.markdown(f"<p style='font-size:0.65rem;color:#bbb;text-align:center;margin:8px 0 0 0'>"
-                f"v3.4 · {datetime.now().strftime('%m-%d %H:%M')}</p>", unsafe_allow_html=True)
+                f"v3.4 · {datetime.now().strftime('%m月%d日 %H:%M')}</p>", unsafe_allow_html=True)
 
 # ==================== 主页面 ====================
 st.markdown("""
