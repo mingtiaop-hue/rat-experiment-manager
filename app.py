@@ -531,48 +531,58 @@ with tab_gallery:
 
 # ==================== TAB 4: 对比 ====================
 with tab_compare:
-    st.subheader("🔬 伤口照片对比")
+    st.subheader("🔬 伤口照片自由对比")
+    st.caption("任意鼠 × 任意伤口位置自由组合。只有已上传照片的天可选。")
 
-    comp_mode = st.radio("对比模式", ["跨鼠对比", "同鼠对比"], horizontal=True,
-                         help="跨鼠=不同鼠同一伤口位 | 同鼠=同一鼠不同伤口")
+    all_rats = get_all_rats()
 
-    if comp_mode == "跨鼠对比":
-        st.caption("选择不同鼠的同一伤口位，横向对比愈合效果。只有已上传照片的天可选。")
-        comp_pos = st.radio("对比伤口位", options=[1, 2, 3, 4], horizontal=True,
-                            format_func=lambda p: f"W{p}")
-        st.caption(
-            f"不电刺激 W{comp_pos} → **{GROUP_LABELS.get(WOUND_MAPPING['non_es'][comp_pos], '?')}**　｜　"
-            f"电刺激 W{comp_pos} → **{GROUP_LABELS.get(WOUND_MAPPING['es'][comp_pos], '?')}**"
-        )
-        all_rats = get_all_rats()
-        comp_rats = st.multiselect(
-            "选择鼠（可多选）", options=[r["rat_id"] for r in all_rats],
-            default=[r["rat_id"] for r in all_rats[:3]],
-        )
+    # 先选鼠
+    comp_rats = st.multiselect(
+        "1. 选择鼠",
+        options=[r["rat_id"] for r in all_rats],
+        default=[r["rat_id"] for r in all_rats[:3]],
+    )
 
-        available_days = set()
-        if comp_rats:
-            from database import get_conn
-            conn = get_conn()
-            wound_ids = [f"{r}_W{comp_pos}" for r in comp_rats]
-            placeholders = ",".join("?" * len(wound_ids))
-            rows = conn.execute(
-                f"SELECT DISTINCT experiment_day FROM photos WHERE wound_id IN ({placeholders}) ORDER BY experiment_day",
-                wound_ids).fetchall()
-            available_days = sorted([r[0] for r in rows])
-            conn.close()
+    # 再选每只鼠的伤口位
+    comp_pairs = []  # [(rat_id, wound_pos, wound_id, group, label)]
+    if comp_rats:
+        wound_opts = st.columns(4)
+        for i, p in enumerate([1, 2, 3, 4]):
+            wound_opts[i].checkbox(f"W{p}", value=True, key=f"cw_{p}")
+        selected_positions = [p for p in [1, 2, 3, 4] if st.session_state.get(f"cw_{p}", True)]
 
+        for rat_id in sorted(comp_rats):
+            rt = get_rat_type(rat_id)
+            for pos in selected_positions:
+                wound_id = f"{rat_id}_W{pos}"
+                group = WOUND_MAPPING[rt][pos]
+                comp_pairs.append((rat_id, pos, wound_id, group, GROUP_LABELS.get(group, group)))
+
+    # 计算可用天
+    available_days = set()
+    if comp_pairs:
+        from database import get_conn
+        conn = get_conn()
+        wound_ids = [w[2] for w in comp_pairs]
+        placeholders = ",".join("?" * len(wound_ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT experiment_day FROM photos WHERE wound_id IN ({placeholders}) ORDER BY experiment_day",
+            wound_ids).fetchall()
+        available_days = sorted([r[0] for r in rows])
+        conn.close()
+
+    if comp_pairs:
+        st.caption(f"已选 **{len(comp_pairs)}** 个对比项")
         if not available_days:
-            if comp_rats:
-                st.info("选中的鼠在该伤口位暂无照片。")
+            st.info("选中的伤口暂无照片，请先上传。")
         else:
             comp_days = st.multiselect(
-                "选择天", options=available_days,
+                "2. 选择天", options=available_days,
                 default=available_days[:min(4, len(available_days))],
                 format_func=lambda d: f"Day {d}")
             comp_days = sorted(comp_days)
 
-            if comp_rats and comp_days:
+            if comp_days:
                 from database import get_conn
                 conn = get_conn()
                 all_areas = {}
@@ -581,79 +591,9 @@ with tab_compare:
                 conn.close()
 
                 st.markdown("---")
-                for rat_id in sorted(comp_rats):
-                    st.markdown(f"### 🐁 鼠 {rat_id} ({get_rat_type_label(rat_id)})")
-                    wounds = get_wounds_by_rat(rat_id)
-                    w = next((w for w in wounds if w["wound_position"] == comp_pos), None)
-                    if w is None:
-                        st.caption(f"W{comp_pos} 不存在")
-                        continue
-                    wound_id = w["wound_id"]
-                    photos = get_wound_photos(wound_id)
-                    areas = all_areas.get(wound_id, {})
-                    cols = st.columns(len(comp_days))
-                    for i, day in enumerate(comp_days):
-                        dp = next((p for p in photos if p["experiment_day"] == day), None)
-                        a = areas.get(day)
-                        with cols[i]:
-                            cap = f"**D{day}**"
-                            if a is not None:
-                                cap += f" — {a:.1f}mm²"
-                            st.markdown(cap)
-                            if dp and os.path.exists(dp["file_path"]):
-                                st.image(dp["file_path"], width=180)
-                            else:
-                                st.caption("—")
-
-    else:  # 同鼠对比
-        st.caption("选择同一只鼠的不同伤口，对比愈合差异。")
-        all_rats = get_all_rats()
-        comp_rat = st.selectbox(
-            "选择鼠", options=[r["rat_id"] for r in all_rats],
-            format_func=lambda r: f"鼠 {r} ({get_rat_type_label(r)})")
-        rat_type = get_rat_type(comp_rat) if comp_rat else "non_es"
-
-        comp_wounds = st.multiselect(
-            "选择伤口位", options=[1, 2, 3, 4],
-            default=[1, 2, 3, 4],
-            format_func=lambda p: f"W{p} — {GROUP_LABELS.get(WOUND_MAPPING[rat_type][p], '?')}")
-
-        available_days = set()
-        if comp_rat and comp_wounds:
-            from database import get_conn
-            conn = get_conn()
-            wound_ids = [f"{comp_rat}_W{p}" for p in comp_wounds]
-            placeholders = ",".join("?" * len(wound_ids))
-            rows = conn.execute(
-                f"SELECT DISTINCT experiment_day FROM photos WHERE wound_id IN ({placeholders}) ORDER BY experiment_day",
-                wound_ids).fetchall()
-            available_days = sorted([r[0] for r in rows])
-            conn.close()
-
-        if not available_days:
-            if comp_rat and comp_wounds:
-                st.info("选中的伤口暂无照片。")
-        else:
-            comp_days = st.multiselect(
-                "选择天", options=available_days,
-                default=available_days[:min(4, len(available_days))],
-                format_func=lambda d: f"Day {d}")
-            comp_days = sorted(comp_days)
-
-            if comp_rat and comp_wounds and comp_days:
-                from database import get_conn
-                conn = get_conn()
-                all_areas = {}
-                for row in conn.execute("SELECT wound_id, experiment_day, wound_area_mm2 FROM wound_records WHERE wound_area_mm2 IS NOT NULL").fetchall():
-                    all_areas.setdefault(row["wound_id"], {})[row["experiment_day"]] = row["wound_area_mm2"]
-                conn.close()
-
-                st.markdown("---")
-                # 列=伤口，每个伤口显示多天
-                for pos in sorted(comp_wounds):
-                    wound_id = f"{comp_rat}_W{pos}"
-                    group = WOUND_MAPPING[rat_type][pos]
-                    st.markdown(f"### W{pos} — {GROUP_LABELS.get(group, group)}")
+                for rat_id, pos, wound_id, group, label in comp_pairs:
+                    st.markdown(
+                        f"### 🐁 鼠{rat_id} W{pos} — {label} ({get_rat_type_label(rat_id)})")
                     photos = get_wound_photos(wound_id)
                     areas = all_areas.get(wound_id, {})
                     cols = st.columns(len(comp_days))
