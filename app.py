@@ -181,7 +181,7 @@ with st.sidebar:
             <div style='margin-bottom:8px'>
                 <div style='display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:1px'>
                     <span style='font-weight:600'>{g}</span>
-                    <span>🟢{alive}/{total}</span>
+                    <span>🟢{alive} / {total}</span>
                 </div>
                 <div style='background:#e0e0e0;border-radius:4px;height:6px'>
                     <div style='background:{color};width:{pct_alive:.0f}%;height:6px;border-radius:4px'></div>
