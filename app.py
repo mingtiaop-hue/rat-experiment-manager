@@ -1,6 +1,6 @@
 """
-动物实验记录与数据管理系统 v3.1 — Streamlit
-每鼠 4 伤口 | 拖拽照片自动保存 | 批量上传 | 跨鼠对比
+动物实验记录与数据管理系统 v3.3 — Streamlit
+每鼠 4 伤口 | 拖拽自动保存 | 批量上传 | 趋势图 | 愈合率 | 一键保存
 """
 import streamlit as st
 import os, socket
@@ -9,16 +9,17 @@ from datetime import datetime
 
 from config import (
     GROUPS, GROUP_LABELS, TIMELINE, SAMPLING_DAYS,
-    NON_ES_RATS, ES_RATS, WOUND_COUNT,
+    NON_ES_RATS, ES_RATS, WOUND_COUNT, WOUND_MAPPING,
     SAMPLE_TYPES, FIXATION_METHODS, TOTAL_DAYS,
     get_rat_type_label,
 )
 from database import (
     init_db, is_initialized, init_experiment,
-    get_all_rats, get_active_rats, update_rat_status,
+    get_all_rats, get_active_rats, get_rats_alive_on_day, get_rat_day_completion,
+    update_rat_status,
     get_wounds_by_rat, get_wound_record, upsert_wound_record,
     update_wound_status, get_wound_group, get_wound_status_summary,
-    get_photo_path, save_photo_info, get_wound_photos,
+    get_photo_path, save_photo_info, get_wound_photos, delete_photo,
     add_sample, get_all_samples, get_all_data,
     backup_database, set_meta, get_meta,
 )
@@ -84,14 +85,21 @@ def _render_one_dialog(day: int):
             rat_id = int(key.replace("deadr_", ""))
             st.divider(); st.error(f"💀 鼠死亡: **{rat_id}**")
             with st.form(key=f"drf_{rat_id}_{day}"):
-                reason = st.text_area("死亡原因（必填）", placeholder="麻醉过量、感染...")
+                death_type = st.radio("死亡类型", ["实验死亡", "取材处死"], horizontal=True,
+                                      help="实验死亡=意外死亡/感染/麻醉过量；取材处死=按计划处死取材")
+                reason = st.text_area("死亡原因（必填）", placeholder="麻醉过量、感染..." if death_type == "实验死亡" else "按实验计划处死取材")
                 c1, c2 = st.columns(2)
                 if c1.form_submit_button("✅ 确认", type="primary", use_container_width=True):
                     if not reason.strip():
                         st.error("必填死亡原因")
                     else:
-                        update_rat_status(rat_id, "Deceased", reason.strip())
-                        st.warning(f"鼠 {rat_id} 已标记死亡"); del st.session_state[key]; st.rerun()
+                        update_rat_status(rat_id, "Deceased", reason.strip(),
+                                         death_type=death_type, death_day=day)
+                        if death_type == "实验死亡":
+                            st.warning(f"鼠 {rat_id} 已标记实验死亡（{day}天后不再出现）")
+                        else:
+                            st.info(f"鼠 {rat_id} 已标记取材处死（伤口需逐个收割）")
+                        del st.session_state[key]; st.rerun()
                 if c2.form_submit_button("❌ 取消", use_container_width=True):
                     del st.session_state[key]; st.rerun()
             return
@@ -103,7 +111,37 @@ with st.sidebar:
     st.caption("糖尿病大鼠创面愈合")
     if is_initialized():
         summary = get_wound_status_summary()
+
+        # 进度概览
         st.divider()
+        st.markdown("#### 📊 实验进度")
+        from database import get_conn
+        conn = get_conn()
+        # 照片覆盖天数
+        photo_days = [r[0] for r in conn.execute("SELECT DISTINCT experiment_day FROM photos ORDER BY experiment_day").fetchall()]
+        area_days = [r[0] for r in conn.execute("SELECT DISTINCT experiment_day FROM wound_records WHERE wound_area_mm2 IS NOT NULL ORDER BY experiment_day").fetchall()]
+        # 最新数据日
+        max_day = max(photo_days + area_days) if (photo_days or area_days) else 0
+        conn.close()
+
+        total_wounds = sum(sum(g.values()) for g in summary.values())
+        active_wounds = sum(g["Active"] for g in summary.values())
+        # 可能的照片总数 = 每个伤口每天一张 (不计取材后)
+        possible_photos = total_wounds * max_day if max_day > 0 else total_wounds
+        from database import get_conn as gc
+        c = gc()
+        actual_photos = c.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+        actual_areas = c.execute("SELECT COUNT(*) FROM wound_records WHERE wound_area_mm2 IS NOT NULL").fetchone()[0]
+        c.close()
+
+        cols = st.columns(2)
+        cols[0].metric("📸 照片", actual_photos, delta=None)
+        cols[1].metric("📏 面积", actual_areas, delta=None)
+        st.progress(max_day / TOTAL_DAYS if max_day > 0 else 0, text=f"Day {max_day}/{TOTAL_DAYS}")
+        st.caption(f"照片覆盖 {len(photo_days)} 天 | 面积覆盖 {len(area_days)} 天")
+
+        st.divider()
+        st.markdown("#### 🐁 分组状态")
         for g in GROUPS:
             gs = summary.get(g, {"Active": 0, "Harvested": 0, "Deceased": 0})
             total = sum(gs.values())
@@ -133,9 +171,9 @@ st.caption("拖拽照片自动保存 | 批量上传 | 伤口面积 ImageJ 后补
 if not is_initialized():
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown(f"**不电刺激 (10只)**: {', '.join(str(r) for r in NON_ES_RATS)}\n\nW1→Control / W2→Alginate / W3,W4→Alginate_HJ")
+        st.markdown(f"**不电刺激 (8只)**: {', '.join(str(r) for r in NON_ES_RATS)}\n\nW1→Control / W2→Alginate / W3,W4→Alginate_HJ")
     with col_b:
-        st.markdown(f"**电刺激 (7只)**: {', '.join(str(r) for r in ES_RATS)}\n\nW1,W2→Pure_ES / W3,W4→Stretched_HJ_ES")
+        st.markdown(f"**电刺激 (9只)**: {', '.join(str(r) for r in ES_RATS)}\n\nW1,W2→Pure_ES / W3,W4→Stretched_HJ_ES")
     if st.button("🚀 初始化实验", type="primary", use_container_width=True):
         init_experiment(); set_meta("created_at", datetime.now().isoformat())
         st.success("17只鼠，68个伤口。")
@@ -161,11 +199,53 @@ with tab_entry:
         else:
             st.info(f"📌 Day {current_day} ({pt_day}) — {desc}")
 
-    active_rats = get_active_rats()
+    # 先渲染弹窗（放在鼠列表上方，避免被遮挡看不到）
+    _render_one_dialog(current_day)
+
+    active_rats = get_rats_alive_on_day(current_day)
     if not active_rats:
         st.warning("没有存活鼠。")
     else:
+        # ===== 录入进度追踪 =====
+        completion = get_rat_day_completion(current_day)
+        done_rats = sum(1 for rid, c in completion.items() if c["done"] >= c["total"] and c["total"] > 0)
+        total_rats = sum(1 for rid, c in completion.items() if c["total"] > 0)
+        pending_rats = [rid for rid, c in completion.items() if c["done"] < c["total"] and c["total"] > 0]
+
         st.markdown(f"### 🐁 {len(active_rats)} 只存活鼠")
+        # 进度条
+        if total_rats > 0:
+            pct = done_rats / total_rats
+            color = "green" if pct == 1 else ("orange" if pct >= 0.5 else "red")
+            st.markdown(
+                f"📊 当日录入进度: **{done_rats}/{total_rats}** 只已完成  "
+                f"<span style='color:{color};font-size:18px'>{'🟢' if pct == 1 else '🟡' if pct >= 0.5 else '🔴'}</span>",
+                unsafe_allow_html=True,
+            )
+            st.progress(pct, text=f"{done_rats}/{total_rats} 只已完成")
+            if pending_rats:
+                st.caption(f"⏳ 待录入: {', '.join(f'鼠{r}' for r in sorted(pending_rats))}")
+            else:
+                st.success("🎉 今日全部录入完成！")
+
+        # 一键保存全部面积
+        with st.expander("⚡ 一键保存全部面积", expanded=False):
+            st.caption("填好所有伤口面积后，点此一键保存。不会覆盖已有照片。")
+            if st.button("💾 保存当前Day所有面积", type="primary", use_container_width=True):
+                saved = 0
+                for rat in active_rats:
+                    for w in get_wounds_by_rat(rat["rat_id"]):
+                        if w["status"] != "Active":
+                            continue
+                        wound_id = w["wound_id"]
+                        area_key = f"a_{wound_id}_{current_day}"
+                        if area_key in st.session_state and st.session_state[area_key] is not None:
+                            upsert_wound_record(wound_id, current_day, st.session_state[area_key])
+                            saved += 1
+                if saved > 0:
+                    st.success(f"✅ 已保存 {saved} 个伤口的面积")
+                else:
+                    st.warning("没有检测到已填写的面积数据")
 
         for rat in active_rats:
             rat_id = rat["rat_id"]
@@ -195,22 +275,39 @@ with tab_entry:
                         help="可留空，ImageJ 后补",
                     )
 
-                    photo = c2.file_uploader(
-                        f"📸 拖拽照片", type=["jpg", "jpeg", "png"],
-                        key=f"ph_{wound_id}_{current_day}", label_visibility="visible",
-                    )
-                    if photo:
-                        sp = get_photo_path(group, wound_id, current_day)
-                        info = save_uploaded_photo(photo, sp)
-                        save_photo_info(wound_id, current_day, sp)
-                        # 自动保存面积（如果填了）
-                        if area and area > 0:
-                            upsert_wound_record(wound_id, current_day, area)
-                        st.toast(f"{wound_id} 📸 {info['size_kb']}KB 已保存", icon="✅")
+                    # 检查当天是否已有照片
+                    existing_photos = get_wound_photos(wound_id)
+                    today_photo = next((p for p in existing_photos if p["experiment_day"] == current_day), None)
+
+                    if today_photo and os.path.exists(today_photo["file_path"]):
+                        # 已有照片：显示缩略图 + 删除按钮
+                        c2.image(today_photo["file_path"], width=120)
+                        if c2.button("🗑️ 删除照片", key=f"del_{wound_id}_{current_day}", help="删除当天的照片（可重新上传）"):
+                            delete_photo(wound_id, current_day)
+                            st.toast(f"{wound_id} Day{current_day} 照片已删除", icon="🗑️")
+                            st.rerun()
+                    else:
+                        photo = c2.file_uploader(
+                            f"📸 拖拽照片", type=["jpg", "jpeg", "png"],
+                            key=f"ph_{wound_id}_{current_day}", label_visibility="visible",
+                        )
+                        if photo:
+                            with st.spinner(f"🖼️ 正在压缩照片..."):
+                                try:
+                                    sp = get_photo_path(group, wound_id, current_day)
+                                    info = save_uploaded_photo(photo, sp)
+                                    save_photo_info(wound_id, current_day, sp)
+                                    # 自动保存面积（只要填了就保存，含0=完全愈合）
+                                    if area is not None:
+                                        upsert_wound_record(wound_id, current_day, area)
+                                    st.toast(f"{wound_id} 📸 {info['size_kb']}KB 已保存", icon="✅")
+                                    st.rerun()
+                                except ValueError as e:
+                                    st.error(f"❌ 照片保存失败: {e}")
 
                     save_label = "✏️" if exist else "💾"
                     if c3.button(save_label, key=f"sv_{wound_id}_{current_day}", use_container_width=True, help="保存伤口面积"):
-                        upsert_wound_record(wound_id, current_day, area if area else None)
+                        upsert_wound_record(wound_id, current_day, area if area is not None else None)
                         st.toast(f"{wound_id} 已保存", icon="✅")
 
                     if is_sampling:
@@ -222,8 +319,6 @@ with tab_entry:
                 st.divider()
                 if st.button(f"💀 鼠 {rat_id} 死亡", key=f"dr_{rat_id}"):
                     st.session_state[f"deadr_{rat_id}"] = True
-
-        _render_one_dialog(current_day)
 
 # ==================== TAB 2: 批量上传 ====================
 with tab_batch:
@@ -239,8 +334,13 @@ with tab_batch:
         st.info(f"📌 Day {batch_day} ({pt_day})")
 
     # 选择一只鼠，一次性拖入 4 张照片
-    batch_rat = st.selectbox("选择鼠", options=[r["rat_id"] for r in get_active_rats()],
-                             format_func=lambda r: f"鼠 {r} ({get_rat_type_label(r)})", key="batch_rat")
+    batch_rats = get_rats_alive_on_day(batch_day)
+    if not batch_rats:
+        st.warning("当天没有存活鼠。")
+        batch_rat = None
+    else:
+        batch_rat = st.selectbox("选择鼠", options=[r["rat_id"] for r in batch_rats],
+                                 format_func=lambda r: f"鼠 {r} ({get_rat_type_label(r)})", key="batch_rat")
 
     if batch_rat:
         wounds = [w for w in get_wounds_by_rat(batch_rat) if w["status"] == "Active"]
@@ -265,19 +365,24 @@ with tab_batch:
                     st.image(bf, caption=f"第{i + 1}张", width=180)
 
             if st.button(f"🚀 一键保存 {len(batch_files)} 张照片", type="primary", use_container_width=True):
-                saved_count = 0
-                for i, bf in enumerate(batch_files):
-                    if i >= len(wounds):
-                        st.warning(f"照片数量({len(batch_files)})超过存活伤口数({len(wounds)})，第{i + 1}张及之后跳过")
-                        break
-                    wound_id = wounds[i]["wound_id"]
-                    group = wounds[i]["group_name"]
-                    sp = get_photo_path(group, wound_id, batch_day)
-                    info = save_uploaded_photo(bf, sp)
-                    save_photo_info(wound_id, batch_day, sp)
-                    saved_count += 1
-                st.success(f"✅ 已保存 {saved_count} 张照片")
-                st.balloons()
+                with st.spinner(f"🖼️ 正在压缩 {len(batch_files)} 张照片..."):
+                    saved_count = 0
+                    for i, bf in enumerate(batch_files):
+                        if i >= len(wounds):
+                            st.warning(f"照片数量({len(batch_files)})超过存活伤口数({len(wounds)})，第{i + 1}张及之后跳过")
+                            break
+                        try:
+                            wound_id = wounds[i]["wound_id"]
+                            group = wounds[i]["group_name"]
+                            sp = get_photo_path(group, wound_id, batch_day)
+                            info = save_uploaded_photo(bf, sp)
+                            save_photo_info(wound_id, batch_day, sp)
+                            saved_count += 1
+                        except ValueError as e:
+                            st.error(f"第{i+1}张照片保存失败: {e}")
+                if saved_count > 0:
+                    st.success(f"✅ 已保存 {saved_count} 张照片")
+                    st.balloons()
 
         # 显示当前已上传的照片
         st.divider()
@@ -312,24 +417,54 @@ with tab_gallery:
             if sel_w is not None:
                 wound_id = wounds[sel_w]["wound_id"]
                 photos = get_wound_photos(wound_id)
-                if not photos:
+                # 加载面积记录
+                from database import get_conn
+                conn = get_conn()
+                area_rows = conn.execute(
+                    "SELECT experiment_day, wound_area_mm2 FROM wound_records WHERE wound_id=? AND wound_area_mm2 IS NOT NULL",
+                    (wound_id,)).fetchall()
+                conn.close()
+                area_map = {r["experiment_day"]: r["wound_area_mm2"] for r in area_rows}
+
+                if not photos and not area_map:
                     st.info("暂无照片。拖拽上传即可。")
                 else:
-                    cols = st.columns(min(len(photos), 7))
-                    for i, p in enumerate(photos):
-                        with cols[i % 7]:
-                            if os.path.exists(p["file_path"]):
-                                st.image(p["file_path"], caption=f"D{p['experiment_day']}", width=180)
+                    if photos:
+                        cols = st.columns(min(len(photos), 7))
+                        for i, p in enumerate(photos):
+                            with cols[i % 7]:
+                                if os.path.exists(p["file_path"]):
+                                    day = p["experiment_day"]
+                                    a = area_map.get(day)
+                                    cap = f"D{day}"
+                                    if a is not None:
+                                        cap += f" | {a:.1f}mm²"
+                                    st.image(p["file_path"], caption=cap, width=180)
+                                    if st.button("🗑️", key=f"gal_del1_{wound_id}_{day}", help=f"删除 D{day} 照片"):
+                                        delete_photo(wound_id, day)
+                                        st.toast(f"D{day} 照片已删除", icon="🗑️")
+                                        st.rerun()
                     st.divider()
                     st.markdown("#### Day 1–14 全时间线")
                     grid = st.columns(7)
                     for day in range(1, TOTAL_DAYS + 1):
                         dp = next((p for p in photos if p["experiment_day"] == day), None)
+                        a = area_map.get(day)
                         with grid[(day - 1) % 7]:
                             if dp and os.path.exists(dp["file_path"]):
-                                st.image(dp["file_path"], caption=f"D{day}", width=180)
+                                cap = f"D{day}"
+                                if a is not None:
+                                    cap += f" | {a:.1f}mm²"
+                                st.image(dp["file_path"], caption=cap, width=180)
+                                if st.button("🗑️", key=f"gal_del2_{wound_id}_{day}", help=f"删除 D{day} 照片"):
+                                    delete_photo(wound_id, day)
+                                    st.toast(f"D{day} 照片已删除", icon="🗑️")
+                                    st.rerun()
                             else:
-                                st.markdown(f"<div style='height:55px;background:#eee;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:10px'>D{day}</div>", unsafe_allow_html=True)
+                                placeholder = f"D{day}"
+                                if a is not None:
+                                    placeholder += f"\n{a:.1f}mm²"
+                                st.markdown(f"<div style='height:55px;background:#eee;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:10px'>{placeholder}</div>", unsafe_allow_html=True)
     else:
         st.info("请先初始化实验。")
 
@@ -341,8 +476,10 @@ with tab_compare:
     # 选择要对比的伤口位置
     comp_pos = st.radio("对比伤口位", options=[1, 2, 3, 4], horizontal=True,
                         format_func=lambda p: f"W{p}")
-    comp_group = GROUPS[[1, 2, 3, 3][comp_pos - 1] if comp_pos else 0]  # 默认 W1→Control
-    st.caption(f"该伤口位对应组: **{GROUP_LABELS.get(comp_group or 'Control', '?')}**")
+    st.caption(
+        f"不电刺激鼠 W{comp_pos} → **{GROUP_LABELS.get(WOUND_MAPPING['non_es'][comp_pos], '?')}**　｜　"
+        f"电刺激鼠 W{comp_pos} → **{GROUP_LABELS.get(WOUND_MAPPING['es'][comp_pos], '?')}**"
+    )
 
     # 选择多只鼠
     all_rats = get_all_rats()
@@ -362,6 +499,14 @@ with tab_compare:
     )
 
     if comp_rats and comp_days:
+        # 预加载所有面积数据
+        from database import get_conn
+        conn = get_conn()
+        all_areas = {}
+        for row in conn.execute("SELECT wound_id, experiment_day, wound_area_mm2 FROM wound_records WHERE wound_area_mm2 IS NOT NULL").fetchall():
+            all_areas.setdefault(row["wound_id"], {})[row["experiment_day"]] = row["wound_area_mm2"]
+        conn.close()
+
         st.markdown("---")
         # 表格形式：行=鼠，列=天
         for rat_id in sorted(comp_rats):
@@ -373,46 +518,135 @@ with tab_compare:
                 continue
             wound_id = w["wound_id"]
             photos = get_wound_photos(wound_id)
+            areas = all_areas.get(wound_id, {})
             cols = st.columns(len(comp_days))
             for i, day in enumerate(comp_days):
                 dp = next((p for p in photos if p["experiment_day"] == day), None)
+                a = areas.get(day)
                 with cols[i]:
-                    st.markdown(f"**D{day}**")
+                    cap = f"**D{day}**"
+                    if a is not None:
+                        cap += f" — {a:.1f}mm²"
+                    st.markdown(cap)
                     if dp and os.path.exists(dp["file_path"]):
                         st.image(dp["file_path"], width=180)
                     else:
                         st.markdown("<div style='height:70px;background:#eee;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:10px'>—</div>", unsafe_allow_html=True)
 
-# ==================== TAB 5: 数据导出 ====================
+# ==================== TAB 5: 数据与图表 ====================
 with tab_export:
-    st.subheader("📊 数据导出")
-    cf1, cf2 = st.columns(2)
-    with cf1:
-        f_group = st.selectbox("分组", ["全部"] + GROUPS, key="fg")
-    with cf2:
-        f_day = st.selectbox("天数", ["全部"] + list(range(1, TOTAL_DAYS + 1)), key="fd")
-    gv = None if f_group == "全部" else f_group
-    dv = None if f_day == "全部" else f_day
-    records = [r for r in get_all_data(group=gv, day=dv) if r["experiment_day"]]
-    if records:
-        df = pd.DataFrame(records).rename(columns={
-            "rat_id": "鼠", "wound_id": "伤口ID", "wound_position": "位",
-            "group_name": "分组", "experiment_day": "天", "wound_area_mm2": "面积",
-        })
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    st.divider()
-    ce1, ce2 = st.columns([1, 3])
-    if ce1.button("📥 导出 Excel", type="primary", use_container_width=True):
-        fp = export_to_excel(group_filter=gv)
-        with open(fp, "rb") as f:
-            ce2.download_button("⬇️ 下载", data=f, file_name=os.path.basename(fp),
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.success(f"已导出: {os.path.basename(fp)}")
-    if st.button("🔍 照片完整性检查", use_container_width=True):
-        r = check_photo_integrity()
-        st.metric("正常", r["ok"])
-        if r["orphan"]: st.warning(f"孤儿文件: {len(r['orphan'])}")
-        if r["missing"]: st.error(f"缺失: {len(r['missing'])}")
+    st.subheader("📊 数据与图表")
+
+    # ===== 子Tab: 图表 vs 数据表 =====
+    chart_tab, data_tab = st.tabs(["📈 愈合趋势", "📋 数据导出"])
+
+    with chart_tab:
+        # 分组选择
+        chart_groups = st.multiselect(
+            "选择分组", GROUPS, default=GROUPS,
+            format_func=lambda g: GROUP_LABELS.get(g, g),
+            key="chart_groups",
+        )
+        chart_mode = st.radio("显示模式", ["分组均值±SEM", "单只鼠轨迹"], horizontal=True, key="chart_mode")
+
+        if chart_groups:
+            from database import get_conn
+            conn = get_conn()
+            records = conn.execute("""
+                SELECT wr.experiment_day, wr.wound_area_mm2, w.group_name, w.rat_id, w.wound_id
+                FROM wound_records wr
+                JOIN wounds w ON wr.wound_id = w.wound_id
+                WHERE w.group_name IN ({})
+                ORDER BY wr.experiment_day, w.rat_id
+            """.format(",".join("?" * len(chart_groups))), chart_groups).fetchall()
+            conn.close()
+            records = [dict(r) for r in records]
+
+            if records:
+                df = pd.DataFrame(records)
+                df = df.dropna(subset=["wound_area_mm2"])
+
+                if not df.empty:
+                    if chart_mode == "分组均值±SEM":
+                        # 聚合：每天每组 mean, sem
+                        agg = df.groupby(["experiment_day", "group_name"])["wound_area_mm2"].agg(["mean", "sem", "count"]).reset_index()
+                        import plotly.express as px
+                        try:
+                            fig = px.line(agg, x="experiment_day", y="mean", color="group_name",
+                                          error_y="sem", markers=True,
+                                          labels={"experiment_day": "实验天数", "mean": "伤口面积 mm²", "group_name": "分组"},
+                                          title="伤口愈合趋势（均值±SEM）")
+                            fig.update_traces(line_width=2)
+                            fig.update_layout(hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02))
+                            st.plotly_chart(fig, use_container_width=True)
+                        except ImportError:
+                            # fallback: no error bars
+                            pivot = agg.pivot(index="experiment_day", columns="group_name", values="mean")
+                            st.line_chart(pivot, use_container_width=True)
+                            st.caption("💡 安装 plotly 可显示误差棒: `pip install plotly`")
+                    else:
+                        # 单只鼠轨迹：选分组 → 选鼠
+                        sel_chart_rat = st.selectbox("选择鼠", sorted(df["rat_id"].unique()), key="chart_rat")
+                        rat_df = df[df["rat_id"] == sel_chart_rat]
+                        wounds_data = {}
+                        for wid in rat_df["wound_id"].unique():
+                            wd = rat_df[rat_df["wound_id"] == wid].sort_values("experiment_day")
+                            wounds_data[f"{wid} ({GROUP_LABELS.get(wd.iloc[0]['group_name'], '')})"] = wd.set_index("experiment_day")["wound_area_mm2"]
+                        if wounds_data:
+                            chart_df = pd.DataFrame(wounds_data)
+                            st.line_chart(chart_df, use_container_width=True)
+
+                    # 愈合率表
+                    st.divider()
+                    st.markdown("#### 愈合率（相对Day 1）")
+                    day1 = df[df["experiment_day"] == df["experiment_day"].min()]
+                    if not day1.empty:
+                        baseline = day1.groupby("group_name")["wound_area_mm2"].mean()
+                        hr_data = []
+                        for day in sorted(df["experiment_day"].unique()):
+                            day_means = df[df["experiment_day"] == day].groupby("group_name")["wound_area_mm2"].mean()
+                            for g in chart_groups:
+                                if g in baseline.index and g in day_means.index and baseline[g] > 0:
+                                    rate = (baseline[g] - day_means[g]) / baseline[g] * 100
+                                    hr_data.append({"天": day, "分组": GROUP_LABELS.get(g, g), "愈合率%": round(rate, 1)})
+                        if hr_data:
+                            hr_df = pd.DataFrame(hr_data).pivot(index="天", columns="分组", values="愈合率%")
+                            st.dataframe(hr_df, use_container_width=True)
+                else:
+                    st.info("暂无有效的伤口面积数据。")
+            else:
+                st.info("暂无数据。")
+
+    with data_tab:
+        cf1, cf2 = st.columns(2)
+        with cf1:
+            f_group = st.selectbox("分组", ["全部"] + GROUPS, key="fg")
+        with cf2:
+            f_day = st.selectbox("天数", ["全部"] + list(range(1, TOTAL_DAYS + 1)), key="fd")
+        gv = None if f_group == "全部" else f_group
+        dv = None if f_day == "全部" else f_day
+        records = [r for r in get_all_data(group=gv, day=dv) if r["experiment_day"]]
+        if records:
+            df = pd.DataFrame(records).rename(columns={
+                "rat_id": "鼠", "wound_id": "伤口ID", "wound_position": "位",
+                "group_name": "分组", "experiment_day": "天", "wound_area_mm2": "面积",
+            })
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("暂无数据。")
+        st.divider()
+        ce1, ce2 = st.columns([1, 3])
+        if ce1.button("📥 导出 Excel", type="primary", use_container_width=True):
+            fp = export_to_excel(group_filter=gv)
+            with open(fp, "rb") as f:
+                ce2.download_button("⬇️ 下载", data=f, file_name=os.path.basename(fp),
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.success(f"已导出: {os.path.basename(fp)}")
+        if st.button("🔍 照片完整性检查", use_container_width=True):
+            r = check_photo_integrity()
+            st.metric("正常", r["ok"])
+            if r["orphan"]: st.warning(f"孤儿文件: {len(r['orphan'])}")
+            if r["missing"]: st.error(f"缺失: {len(r['missing'])}")
 
 # ==================== TAB 6: 样本管理 ====================
 with tab_samples:
@@ -435,12 +669,15 @@ with tab_status:
     all_rats = get_all_rats()
     summary = get_wound_status_summary()
     ar = sum(1 for r in all_rats if r["status"] == "Active")
-    cols = st.columns(5)
+    dr_exp = sum(1 for r in all_rats if r["status"] == "Deceased" and r.get("death_type") == "实验死亡")
+    dr_sac = sum(1 for r in all_rats if r["status"] == "Deceased" and r.get("death_type") == "取材处死")
+    cols = st.columns(6)
     cols[0].metric("鼠数", len(all_rats))
     cols[1].metric("存活鼠", ar)
-    cols[2].metric("总伤口", sum(sum(g.values()) for g in summary.values()))
-    cols[3].metric("存活伤口", sum(g["Active"] for g in summary.values()))
-    cols[4].metric("已取样", sum(g["Harvested"] for g in summary.values()))
+    cols[2].metric("💀 实验死亡", dr_exp)
+    cols[3].metric("🔵 取材处死", dr_sac)
+    cols[4].metric("总伤口", sum(sum(g.values()) for g in summary.values()))
+    cols[5].metric("存活伤口", sum(g["Active"] for g in summary.values()))
     st.divider()
     tdata = [{"分组": g, "中文": GROUP_LABELS[g],
               "存活": f"🟢 {summary.get(g,{}).get('Active',0)}",
@@ -452,16 +689,33 @@ with tab_status:
     for rat in all_rats:
         wounds = get_wounds_by_rat(rat["rat_id"])
         aw = [w for w in wounds if w["status"] == "Active"]
-        si = {"Active": "🟢", "Harvested": "🔵", "Deceased": "🔴"}.get(rat["status"], "⚪")
-        with st.expander(
-            f"{si} 鼠 {rat['rat_id']} ({get_rat_type_label(rat['rat_id'])}) — {len(aw)}/{len(wounds)}"
-            + (f" | {rat['death_reason']}" if rat.get("death_reason") else ""),
-            expanded=rat["status"] == "Active",
-        ):
+        # 状态图标：区分实验死亡和取材处死
+        if rat["status"] == "Deceased":
+            if rat.get("death_type") == "取材处死":
+                si = "🔵"  # 取材处死用蓝色
+            else:
+                si = "💀"  # 实验死亡用骷髅
+        else:
+            si = "🟢"
+        # 构建副标题：死亡类型 + 死亡原因 + 死亡天/时间
+        subtitle_parts = []
+        if rat.get("death_type"):
+            subtitle_parts.append(rat["death_type"])
+        if rat.get("death_reason"):
+            subtitle_parts.append(rat["death_reason"])
+        if rat.get("death_day"):
+            subtitle_parts.append(f"Day {rat['death_day']}")
+        if rat.get("death_time"):
+            subtitle_parts.append(f"⏰ {rat['death_time']}")
+        subtitle = " | ".join(subtitle_parts) if subtitle_parts else ""
+        title = f"{si} 鼠 {rat['rat_id']} ({get_rat_type_label(rat['rat_id'])}) — {len(aw)}/{len(wounds)}"
+        if subtitle:
+            title += f" | {subtitle}"
+        with st.expander(title, expanded=rat["status"] == "Active"):
             wc = st.columns(len(wounds))
             for i, w in enumerate(wounds):
                 wi = {"Active": "🟢", "Harvested": "🔵", "Deceased": "🔴"}[w["status"]]
                 wc[i].markdown(f"{wi} W{w['wound_position']}\n{GROUP_LABELS.get(w['group_name'], w['group_name'])}")
 
 st.divider()
-st.caption("🐀 v3.1 | 拖拽自动保存 | 批量上传 | 跨鼠对比 | ImageJ 后补面积")
+st.caption("🐀 v3.4 | 录入进度追踪 | 死亡类型区分 | 取材处死 | 拖拽自动保存 | 批量上传 | 趋势图 | 愈合率% | 一键保存")

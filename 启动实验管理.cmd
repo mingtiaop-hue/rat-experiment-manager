@@ -1,21 +1,35 @@
 @echo off
 chcp 65001 >nul
-title 动物实验管理系统 - ProView Lab
+title Animal Experiment Manager v3.4
+
+set "PYTHON_DIR=%LOCALAPPDATA%\Programs\Python\Python313"
+set "PATH=%PYTHON_DIR%\Scripts;%PYTHON_DIR%;%PATH%"
+
 cd /d "%~dp0"
 
 echo.
-echo   ╔══════════════════════════════════╗
-echo   ║  🐀 动物实验记录与数据管理系统   ║
-echo   ║  糖尿病大鼠创面愈合实验          ║
-echo   ╚══════════════════════════════════╝
+echo   ========================================
+echo     Animal Experiment Manager v3.4
+echo     Diabetic Rat Wound Healing Study
+echo   ========================================
 echo.
-echo   正在启动服务器...
-echo   启动后浏览器会自动打开
-echo   手机扫码也可访问（同一WiFi）
+echo   Python:
+python --version
 echo.
-echo   按 Ctrl+C 可停止服务器
-echo   ———————————————————————————————
+echo   Checking install...
+python -c "from database import get_rats_alive_on_day; print('OK')" >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo   [ERROR] Module import failed!
+    python -c "from database import get_rats_alive_on_day"
+    pause
+    exit /b 1
+)
+echo   Starting server...
+echo   Browser will open: http://localhost:8501
+echo   Press Ctrl+C to stop
+echo   ========================================
+echo.
 
-streamlit run app.py --server.headless true
+python -m streamlit run app.py
 
 pause

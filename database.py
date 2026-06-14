@@ -34,6 +34,7 @@ def init_db():
             rat_type TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'Active',
             death_reason TEXT,
+            death_time TIMESTAMP,
             notes TEXT
         );
         CREATE TABLE IF NOT EXISTS wounds (
@@ -80,6 +81,16 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_photos_wound_day ON photos(wound_id, experiment_day);
         CREATE INDEX IF NOT EXISTS idx_samples_wound ON samples(wound_id);
     """)
+    # Migrations: add columns if not exist
+    for col, col_type in [
+        ("death_time", "TIMESTAMP"),
+        ("death_type", "TEXT"),
+        ("death_day", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE rats ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -139,11 +150,59 @@ def get_active_rats() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def update_rat_status(rat_id: int, status: str, death_reason: str = None):
+def get_rats_alive_on_day(day: int) -> list[dict]:
+    """返回在指定实验天存活的鼠（死亡日当天仍显示，之后不显示）"""
     conn = get_conn()
-    conn.execute("UPDATE rats SET status=?, death_reason=? WHERE rat_id=?", (status, death_reason, rat_id))
+    rows = conn.execute(
+        "SELECT * FROM rats WHERE status = 'Active' OR (status = 'Deceased' AND death_day >= ?) ORDER BY rat_id",
+        (day,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_rat_day_completion(day: int) -> dict[int, dict]:
+    """返回每只存活鼠在指定天的录入情况。
+    Returns: {rat_id: {total: 存活伤口数, done: 已录入(有照片或面积)伤口数, wound_ids: [...]}}"""
+    alive = get_rats_alive_on_day(day)
+    conn = get_conn()
+    result = {}
+    for rat in alive:
+        rid = rat["rat_id"]
+        wounds = conn.execute(
+            "SELECT wound_id FROM wounds WHERE rat_id=? AND status='Active'", (rid,)).fetchall()
+        wound_ids = [w["wound_id"] for w in wounds]
+        if not wound_ids:
+            result[rid] = {"total": 0, "done": 0, "wound_ids": []}
+            continue
+        placeholders = ",".join("?" * len(wound_ids))
+        # 有照片或面积记录即视为已录入
+        done_photos = set(r[0] for r in conn.execute(
+            f"SELECT DISTINCT wound_id FROM photos WHERE experiment_day=? AND wound_id IN ({placeholders})",
+            (day, *wound_ids)).fetchall())
+        done_areas = set(r[0] for r in conn.execute(
+            f"SELECT DISTINCT wound_id FROM wound_records WHERE experiment_day=? AND wound_area_mm2 IS NOT NULL AND wound_id IN ({placeholders})",
+            (day, *wound_ids)).fetchall())
+        done = len(done_photos | done_areas)
+        result[rid] = {"total": len(wound_ids), "done": done, "wound_ids": wound_ids}
+    conn.close()
+    return result
+
+
+def update_rat_status(rat_id: int, status: str, death_reason: str = None,
+                      death_type: str = None, death_day: int = None):
+    """更新鼠状态。death_type: '实验死亡' | '取材处死'
+    伤口状态不变——通过 get_rats_alive_on_day() 按 death_day 控制后续天是否出现。
+    """
+    conn = get_conn()
     if status == "Deceased":
-        conn.execute("UPDATE wounds SET status='Deceased' WHERE rat_id=?", (rat_id,))
+        dt = death_type or "实验死亡"
+        conn.execute(
+            "UPDATE rats SET status=?, death_reason=?, death_type=?, death_day=?, death_time=CURRENT_TIMESTAMP WHERE rat_id=?",
+            (status, death_reason, dt, death_day, rat_id))
+        # 伤口保持不变：死亡当天仍可录入；后续天由 get_rats_alive_on_day 过滤
+    else:
+        conn.execute("UPDATE rats SET status=?, death_reason=?, death_type=NULL, death_day=NULL WHERE rat_id=?",
+                     (status, death_reason, rat_id))
     conn.commit()
     conn.close()
 
@@ -224,6 +283,28 @@ def get_wound_photos(wound_id: str) -> list[dict]:
     rows = conn.execute("SELECT * FROM photos WHERE wound_id=? ORDER BY experiment_day", (wound_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def delete_photo(wound_id: str, day: int) -> bool:
+    """删除指定伤口某天的照片（DB记录+文件）。返回是否成功。"""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT file_path FROM photos WHERE wound_id=? AND experiment_day=?",
+        (wound_id, day)).fetchone()
+    if row:
+        path = row["file_path"]
+        conn.execute("DELETE FROM photos WHERE wound_id=? AND experiment_day=?", (wound_id, day))
+        conn.commit()
+        conn.close()
+        # 删除物理文件
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+        return True
+    conn.close()
+    return False
 
 
 # ==================== 样本 ====================
