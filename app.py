@@ -107,65 +107,125 @@ def _render_one_dialog(day: int):
 
 # ==================== 侧边栏 ====================
 with st.sidebar:
-    st.title("🐀 实验管理")
-    st.caption("糖尿病大鼠创面愈合")
+    st.markdown("""
+    <div style='text-align:center;padding:10px 0'>
+        <span style='font-size:28px'>🐀</span>
+        <h2 style='margin:0;font-size:1.3rem'>实验管理</h2>
+        <p style='color:#888;font-size:0.75rem;margin:0'>糖尿病大鼠创面愈合</p>
+    </div>
+    """, unsafe_allow_html=True)
+
     if is_initialized():
         summary = get_wound_status_summary()
 
-        # 进度概览
-        st.divider()
-        st.markdown("#### 📊 实验进度")
+        # ===== 数据加载 =====
         from database import get_conn
         conn = get_conn()
-        # 照片覆盖天数
-        photo_days = [r[0] for r in conn.execute("SELECT DISTINCT experiment_day FROM photos ORDER BY experiment_day").fetchall()]
-        area_days = [r[0] for r in conn.execute("SELECT DISTINCT experiment_day FROM wound_records WHERE wound_area_mm2 IS NOT NULL ORDER BY experiment_day").fetchall()]
-        # 最新数据日
+        photo_days = sorted([r[0] for r in conn.execute(
+            "SELECT DISTINCT experiment_day FROM photos ORDER BY experiment_day").fetchall()])
+        area_days = sorted([r[0] for r in conn.execute(
+            "SELECT DISTINCT experiment_day FROM wound_records WHERE wound_area_mm2 IS NOT NULL ORDER BY experiment_day").fetchall()])
         max_day = max(photo_days + area_days) if (photo_days or area_days) else 0
+
+        actual_photos = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+        actual_areas = conn.execute(
+            "SELECT COUNT(*) FROM wound_records WHERE wound_area_mm2 IS NOT NULL").fetchone()[0]
+        # 存活鼠数
+        alive_rats = conn.execute("SELECT COUNT(*) FROM rats WHERE status='Active'").fetchone()[0]
+        dead_exp = conn.execute(
+            "SELECT COUNT(*) FROM rats WHERE status='Deceased' AND death_type='实验死亡'").fetchone()[0]
+        dead_sac = conn.execute(
+            "SELECT COUNT(*) FROM rats WHERE status='Deceased' AND death_type='取材处死'").fetchone()[0]
         conn.close()
 
-        total_wounds = sum(sum(g.values()) for g in summary.values())
-        active_wounds = sum(g["Active"] for g in summary.values())
-        # 可能的照片总数 = 每个伤口每天一张 (不计取材后)
-        possible_photos = total_wounds * max_day if max_day > 0 else total_wounds
-        from database import get_conn as gc
-        c = gc()
-        actual_photos = c.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
-        actual_areas = c.execute("SELECT COUNT(*) FROM wound_records WHERE wound_area_mm2 IS NOT NULL").fetchone()[0]
-        c.close()
-
-        cols = st.columns(2)
-        cols[0].metric("📸 照片", actual_photos, delta=None)
-        cols[1].metric("📏 面积", actual_areas, delta=None)
-        st.progress(max_day / TOTAL_DAYS if max_day > 0 else 0, text=f"Day {max_day}/{TOTAL_DAYS}")
-        st.caption(f"照片覆盖 {len(photo_days)} 天 | 面积覆盖 {len(area_days)} 天")
-
+        # ===== 核心指标卡 =====
         st.divider()
-        st.markdown("#### 🐁 分组状态")
+        st.markdown("<p style='font-size:0.85rem;font-weight:700;margin:0 0 8px 0'>📊 核心指标</p>",
+                    unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("📸", actual_photos, delta=f"D{max_day}", delta_color="off")
+        c2.metric("📏", actual_areas, delta=None)
+        c3.metric("🐁", f"{alive_rats}/17", delta=None)
+
+        # ===== 进度条 =====
+        pct = max_day / TOTAL_DAYS if max_day > 0 else 0
+        bar_color = "#4CAF50" if pct >= 0.7 else ("#FF9800" if pct >= 0.3 else "#f44336")
+        st.markdown(f"""
+        <div style='margin:12px 0'>
+            <div style='display:flex;justify-content:space-between;margin-bottom:4px'>
+                <span style='font-weight:700;font-size:0.9rem'>实验进度</span>
+                <span style='font-weight:700;font-size:0.9rem;color:{bar_color}'>Day {max_day}/{TOTAL_DAYS}</span>
+            </div>
+            <div style='background:#e0e0e0;border-radius:8px;height:12px'>
+                <div style='background:{bar_color};width:{pct*100:.0f}%;height:12px;border-radius:8px;transition:width 0.5s'></div>
+            </div>
+            <p style='color:#888;font-size:0.7rem;margin:4px 0 0 0'>照片 {len(photo_days)} 天 · 面积 {len(area_days)} 天</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ===== 分组状态 =====
+        st.markdown("<p style='font-size:0.85rem;font-weight:700;margin:0 0 6px 0'>🐁 分组状态</p>",
+                    unsafe_allow_html=True)
+        group_colors = {
+            "Control": "#2196F3", "Alginate": "#4CAF50",
+            "Alginate_HJ": "#FF9800", "Pure_ES": "#9C27B0",
+            "Stretched_HJ_ES": "#E91E63",
+        }
         for g in GROUPS:
             gs = summary.get(g, {"Active": 0, "Harvested": 0, "Deceased": 0})
             total = sum(gs.values())
-            st.markdown(f"**{g}**  {gs['Active']}/{total}  🟢{gs['Active']} 🔵{gs['Harvested']} 🔴{gs['Deceased']}")
+            pct_active = gs['Active'] / total * 100 if total > 0 else 0
+            color = group_colors.get(g, "#666")
+            st.markdown(f"""
+            <div style='margin-bottom:6px'>
+                <div style='display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:1px'>
+                    <span style='font-weight:600'>{g}</span>
+                    <span>{gs['Active']}/{total}</span>
+                </div>
+                <div style='background:#e0e0e0;border-radius:4px;height:6px'>
+                    <div style='background:{color};width:{pct_active:.0f}%;height:6px;border-radius:4px'></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # ===== 死亡统计 =====
+        if dead_exp > 0 or dead_sac > 0:
+            st.markdown(f"<p style='font-size:0.72rem;color:#888;margin:8px 0 0 0'>💀 实验死亡 {dead_exp} 只 · 🔵 取材处死 {dead_sac} 只</p>",
+                        unsafe_allow_html=True)
+
+        # ===== 工具按钮 =====
         st.divider()
-        if st.button("💾 备份数据库", use_container_width=True):
-            st.success(f"已备份: {os.path.basename(backup_database())}")
-        if st.button("🧹 清理孤儿照片", use_container_width=True):
-            st.success(f"已删除 {cleanup_orphan_photos()}")
+        st.markdown("<p style='font-size:0.8rem;font-weight:700;margin:0 0 4px 0'>🔧 工具</p>",
+                    unsafe_allow_html=True)
+        bc1, bc2 = st.columns(2)
+        if bc1.button("💾 备份", use_container_width=True):
+            st.toast(f"已备份", icon="✅")
+        if bc2.button("🧹 清理", use_container_width=True):
+            n = cleanup_orphan_photos()
+            st.toast(f"清理 {n} 张", icon="🧹")
+
+        # ===== 二维码 =====
         st.divider()
         url = f"http://{get_lan_ip()}:8501"
         st.markdown(
-            f'<div style="text-align:center"><img src="data:image/png;base64,{generate_qr_code(url)}" width="160">'
-            f'<p style="font-size:11px;color:#888;margin-top:3px">{url}</p></div>',
+            f'<div style="text-align:center">'
+            f'<img src="data:image/png;base64,{generate_qr_code(url)}" width="130">'
+            f'<p style="font-size:0.7rem;color:#999;margin:3px 0 0 0">{url}</p></div>',
             unsafe_allow_html=True,
         )
     else:
         st.warning("实验未初始化")
-    st.divider()
-    st.caption(datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+    st.markdown(f"<p style='font-size:0.65rem;color:#bbb;text-align:center;margin:8px 0 0 0'>"
+                f"v3.4 · {datetime.now().strftime('%m-%d %H:%M')}</p>", unsafe_allow_html=True)
 
 # ==================== 主页面 ====================
-st.title("🐀 糖尿病大鼠创面愈合实验")
-st.caption("拖拽照片自动保存 | 批量上传 | 伤口面积 ImageJ 后补 | 跨鼠对比")
+st.markdown("""
+<div style='padding:8px 0 4px 0'>
+    <h1 style='margin:0;font-size:1.8rem'>🐀 糖尿病大鼠创面愈合实验</h1>
+    <p style='color:#888;font-size:0.85rem;margin:2px 0 0 0'>拖拽照片自动保存 · 批量上传 · ImageJ后补面积 · 跨鼠对比 · 愈合率</p>
+</div>
+""", unsafe_allow_html=True)
 
 # ==================== 初始化 ====================
 if not is_initialized():
