@@ -471,7 +471,7 @@ with tab_gallery:
 # ==================== TAB 4: 跨鼠对比 ====================
 with tab_compare:
     st.subheader("🔬 跨鼠照片对比")
-    st.caption("实验结束后，选择不同鼠的同一伤口位，横向对比愈合效果。选择数据用。")
+    st.caption("选择不同鼠的同一伤口位，横向对比愈合效果。只有已上传照片的天可选。")
 
     # 选择要对比的伤口位置
     comp_pos = st.radio("对比伤口位", options=[1, 2, 3, 4], horizontal=True,
@@ -490,48 +490,65 @@ with tab_compare:
         help="Ctrl+Click 多选",
     )
 
-    # 选择对比的天
-    comp_days = st.multiselect(
-        "选择对比的天",
-        options=list(range(1, TOTAL_DAYS + 1)),
-        default=[1, 3, 5, 7],
-        format_func=lambda d: f"Day {d}",
-    )
-
-    if comp_rats and comp_days:
-        # 预加载所有面积数据
+    # 计算选中的鼠/伤口位下有哪些天有照片
+    available_days = set()
+    if comp_rats:
         from database import get_conn
         conn = get_conn()
-        all_areas = {}
-        for row in conn.execute("SELECT wound_id, experiment_day, wound_area_mm2 FROM wound_records WHERE wound_area_mm2 IS NOT NULL").fetchall():
-            all_areas.setdefault(row["wound_id"], {})[row["experiment_day"]] = row["wound_area_mm2"]
+        wound_ids = [f"{r}_W{comp_pos}" for r in comp_rats]
+        placeholders = ",".join("?" * len(wound_ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT experiment_day FROM photos WHERE wound_id IN ({placeholders}) ORDER BY experiment_day",
+            wound_ids).fetchall()
+        available_days = sorted([r[0] for r in rows])
         conn.close()
 
-        st.markdown("---")
-        # 表格形式：行=鼠，列=天
-        for rat_id in sorted(comp_rats):
-            st.markdown(f"### 🐁 鼠 {rat_id} ({get_rat_type_label(rat_id)})")
-            wounds = get_wounds_by_rat(rat_id)
-            w = next((w for w in wounds if w["wound_position"] == comp_pos), None)
-            if w is None:
-                st.caption(f"W{comp_pos} 不存在")
-                continue
-            wound_id = w["wound_id"]
-            photos = get_wound_photos(wound_id)
-            areas = all_areas.get(wound_id, {})
-            cols = st.columns(len(comp_days))
-            for i, day in enumerate(comp_days):
-                dp = next((p for p in photos if p["experiment_day"] == day), None)
-                a = areas.get(day)
-                with cols[i]:
-                    cap = f"**D{day}**"
-                    if a is not None:
-                        cap += f" — {a:.1f}mm²"
-                    st.markdown(cap)
-                    if dp and os.path.exists(dp["file_path"]):
-                        st.image(dp["file_path"], width=180)
-                    else:
-                        st.markdown("<div style='height:70px;background:#eee;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:10px'>—</div>", unsafe_allow_html=True)
+    if not available_days:
+        if comp_rats:
+            st.info("选中的鼠在该伤口位暂无照片，请先上传。")
+    else:
+        comp_days = st.multiselect(
+            "选择对比的天（仅显示有照片的天）",
+            options=available_days,
+            default=available_days[:min(4, len(available_days))],
+            format_func=lambda d: f"Day {d}",
+        )
+        # 强制排序
+        comp_days = sorted(comp_days)
+
+        if comp_rats and comp_days:
+            # 预加载所有面积数据
+            from database import get_conn
+            conn = get_conn()
+            all_areas = {}
+            for row in conn.execute("SELECT wound_id, experiment_day, wound_area_mm2 FROM wound_records WHERE wound_area_mm2 IS NOT NULL").fetchall():
+                all_areas.setdefault(row["wound_id"], {})[row["experiment_day"]] = row["wound_area_mm2"]
+            conn.close()
+
+            st.markdown("---")
+            for rat_id in sorted(comp_rats):
+                st.markdown(f"### 🐁 鼠 {rat_id} ({get_rat_type_label(rat_id)})")
+                wounds = get_wounds_by_rat(rat_id)
+                w = next((w for w in wounds if w["wound_position"] == comp_pos), None)
+                if w is None:
+                    st.caption(f"W{comp_pos} 不存在")
+                    continue
+                wound_id = w["wound_id"]
+                photos = get_wound_photos(wound_id)
+                areas = all_areas.get(wound_id, {})
+                cols = st.columns(len(comp_days))
+                for i, day in enumerate(comp_days):
+                    dp = next((p for p in photos if p["experiment_day"] == day), None)
+                    a = areas.get(day)
+                    with cols[i]:
+                        cap = f"**D{day}**"
+                        if a is not None:
+                            cap += f" — {a:.1f}mm²"
+                        st.markdown(cap)
+                        if dp and os.path.exists(dp["file_path"]):
+                            st.image(dp["file_path"], width=180)
+                        else:
+                            st.caption("—")
 
 # ==================== TAB 5: 数据与图表 ====================
 with tab_export:
