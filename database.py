@@ -216,13 +216,27 @@ def get_wounds_by_rat(rat_id: int) -> list[dict]:
 
 
 def get_wound_status_summary() -> dict:
+    """伤口分组状态，区分鼠存活/实验死亡/取材处死"""
     conn = get_conn()
-    rows = conn.execute("SELECT group_name, status, COUNT(*) as cnt FROM wounds GROUP BY group_name, status").fetchall()
+    rows = conn.execute("""
+        SELECT w.group_name, w.status AS wound_status,
+               CASE WHEN r.status = 'Active' THEN 'Active'
+                    WHEN r.death_type = '取材处死' THEN '取材处死'
+                    ELSE '实验死亡'
+               END AS rat_state,
+               COUNT(*) as cnt
+        FROM wounds w JOIN rats r ON w.rat_id = r.rat_id
+        GROUP BY w.group_name, w.status, rat_state
+    """).fetchall()
     conn.close()
     from config import GROUPS
-    summary = {g: {"Active": 0, "Harvested": 0, "Deceased": 0} for g in GROUPS}
+    summary = {g: {"Active": 0, "Harvested": 0, "Deceased": 0, "实验死亡": 0, "取材处死": 0} for g in GROUPS}
     for r in rows:
-        summary[r["group_name"]][r["status"]] = r["cnt"]
+        g = r["group_name"]
+        if r["rat_state"] == "Active":
+            summary[g][r["wound_status"]] += r["cnt"]
+        else:
+            summary[g][r["rat_state"]] += r["cnt"]
     return summary
 
 

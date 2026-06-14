@@ -172,21 +172,31 @@ with st.sidebar:
             "Stretched_HJ_ES": "#E91E63",
         }
         for g in GROUPS:
-            gs = summary.get(g, {"Active": 0, "Harvested": 0, "Deceased": 0})
+            gs = summary.get(g, {"Active": 0, "Harvested": 0, "Deceased": 0, "实验死亡": 0, "取材处死": 0})
             total = sum(gs.values())
-            pct_active = gs['Active'] / total * 100 if total > 0 else 0
+            alive = gs['Active'] + gs['Harvested']  # 存活鼠的伤口
+            dead_exp = gs.get('实验死亡', 0)
+            dead_sac = gs.get('取材处死', 0)
             color = group_colors.get(g, "#666")
+            # 进度条：存活伤口占比
+            pct_alive = alive / total * 100 if total > 0 else 0
             st.markdown(f"""
-            <div style='margin-bottom:6px'>
+            <div style='margin-bottom:8px'>
                 <div style='display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:1px'>
                     <span style='font-weight:600'>{g}</span>
-                    <span>{gs['Active']}/{total}</span>
+                    <span>🟢{alive}</span>
                 </div>
                 <div style='background:#e0e0e0;border-radius:4px;height:6px'>
-                    <div style='background:{color};width:{pct_active:.0f}%;height:6px;border-radius:4px'></div>
+                    <div style='background:{color};width:{pct_alive:.0f}%;height:6px;border-radius:4px'></div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
+            if dead_exp > 0 or dead_sac > 0:
+                parts = []
+                if dead_exp > 0: parts.append(f"💀{dead_exp}")
+                if dead_sac > 0: parts.append(f"🔵{dead_sac}")
+                st.markdown(f"<p style='font-size:0.65rem;color:#888;margin:-4px 0 4px 12px'>{' '.join(parts)}</p>",
+                            unsafe_allow_html=True)
 
         # ===== 死亡统计 =====
         if dead_exp > 0 or dead_sac > 0:
@@ -757,10 +767,12 @@ with tab_status:
     cols[5].metric("存活伤口", sum(g["Active"] for g in summary.values()))
     st.divider()
     tdata = [{"分组": g, "中文": GROUP_LABELS[g],
-              "存活": f"🟢 {summary.get(g,{}).get('Active',0)}",
-              "取材": f"🔵 {summary.get(g,{}).get('Harvested',0)}",
-              "坏疽": f"🔴 {summary.get(g,{}).get('Deceased',0)}",
-              "计": sum(summary.get(g, {"Active":0,"Harvested":0,"Deceased":0}).values())} for g in GROUPS]
+              "🟢存活": f"{summary.get(g,{}).get('Active',0)}",
+              "🔵取材": f"{summary.get(g,{}).get('Harvested',0)}",
+              "🔴坏疽": f"{summary.get(g,{}).get('Deceased',0)}",
+              "💀实验死亡": f"{summary.get(g,{}).get('实验死亡',0)}",
+              "🔵取材处死": f"{summary.get(g,{}).get('取材处死',0)}",
+              "计": sum(summary.get(g, {"Active":0,"Harvested":0,"Deceased":0,"实验死亡":0,"取材处死":0}).values())} for g in GROUPS]
     st.dataframe(pd.DataFrame(tdata), use_container_width=True, hide_index=True)
     st.divider()
     for rat in all_rats:
