@@ -175,30 +175,21 @@ with st.sidebar:
             gs = summary.get(g, {"Active": 0, "Harvested": 0, "Deceased": 0, "实验死亡": 0, "取材处死": 0})
             total = sum(gs.values())
             alive = gs['Active'] + gs['Harvested']  # 存活鼠的伤口
-            dead_exp = gs.get('实验死亡', 0)
-            dead_sac = gs.get('取材处死', 0)
             color = group_colors.get(g, "#666")
-            # 进度条：存活伤口占比
             pct_alive = alive / total * 100 if total > 0 else 0
             st.markdown(f"""
             <div style='margin-bottom:8px'>
                 <div style='display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:1px'>
                     <span style='font-weight:600'>{g}</span>
-                    <span>🟢{alive}</span>
+                    <span>🟢{alive}/{total}</span>
                 </div>
                 <div style='background:#e0e0e0;border-radius:4px;height:6px'>
                     <div style='background:{color};width:{pct_alive:.0f}%;height:6px;border-radius:4px'></div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            if dead_exp > 0 or dead_sac > 0:
-                parts = []
-                if dead_exp > 0: parts.append(f"💀{dead_exp}")
-                if dead_sac > 0: parts.append(f"🔵{dead_sac}")
-                st.markdown(f"<p style='font-size:0.65rem;color:#888;margin:-4px 0 4px 12px'>{' '.join(parts)}</p>",
-                            unsafe_allow_html=True)
 
-        # ===== 死亡统计 =====
+        # ===== 死亡统计（鼠级别） =====
         if dead_exp > 0 or dead_sac > 0:
             st.markdown(f"<p style='font-size:0.72rem;color:#888;margin:8px 0 0 0'>💀 实验死亡 {dead_exp} 只 · 🔵 取材处死 {dead_sac} 只</p>",
                         unsafe_allow_html=True)
